@@ -57,7 +57,7 @@ The monitor runs three parallel tasks:
 Different protocols store data in different places:
 - **BRC-20**: Ordinals inscriptions in witness data
 - **Runes**: OP_RETURN outputs with specific markers
-- **Stamps**: Embedded in outputs with STAMPS prefix
+- **Stamps**: Embedded in outputs with Stamps prefix
 
 ```rust
 // scan all protocols in one pass
