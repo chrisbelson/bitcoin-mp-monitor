@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bitcoin Metaprotocol Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .pulse { animation: pulse 2s infinite; }
+        
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .slide-in { animation: slideIn 0.3s ease-out; }
+        
+        .protocol-brc20 { background: linear-gradient(135deg, #FF6B6B, #C44569); }
+        .protocol-runes { background: linear-gradient(135deg, #4ECDC4, #44A08D); }
+        .protocol-stamps { background: linear-gradient(135deg, #A8E6CF, #7FBD9F); }
+        
+        .glass {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="mb-8 text-center">
+            <h1 class="text-5xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent">
+                Bitcoin Metaprotocol Monitor
+            </h1>
+            <p class="text-gray-400">Real-time tracking of BRC-20, Runes, Stamps & more</p>
+            <div class="mt-4 flex justify-center items-center gap-4">
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 bg-green-500 rounded-full pulse"></div>
+                    <span class="text-sm">Live</span>
+                </div>
+                <div class="text-sm text-gray-500" id="connection-status">Connecting...</div>
+            </div>
+        </div>
+
+        <!-- Stats Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="glass rounded-lg p-6">
+                <h3 class="text-lg font-semibold mb-2">BRC-20</h3>
+                <div class="text-3xl font-bold" id="brc20-count">0</div>
+                <div class="text-sm text-gray-400">Transactions</div>
+            </div>
+            <div class="glass rounded-lg p-6">
+                <h3 class="text-lg font-semibold mb-2">Runes</h3>
+                <div class="text-3xl font-bold" id="runes-count">0</div>
+                <div class="text-sm text-gray-400">Transactions</div>
+            </div>
+            <div class="glass rounded-lg p-6">
+                <h3 class="text-lg font-semibold mb-2">Stamps</h3>
+                <div class="text-3xl font-bold" id="stamps-count">0</div>
+                <div class="text-sm text-gray-400">Transactions</div>
+            </div>
+        </div>
+
+        <!-- Activity Chart -->
+        <div class="glass rounded-lg p-6 mb-8">
+            <h3 class="text-xl font-semibold mb-4">Protocol Activity (Last Hour)</h3>
+            <div style="height: 300px; position: relative;">
+                <canvas id="activity-chart"></canvas>
+            </div>
+        </div>
+
+        <!-- Transaction Analyzer -->
+        <div class="glass rounded-lg p-6 mb-8">
+            <h3 class="text-xl font-semibold mb-4">Transaction Analyzer</h3>
+            <div class="flex gap-2">
+                <input 
+                    type="text" 
+                    id="txid-input" 
+                    placeholder="Enter transaction ID..."
+                    class="flex-1 px-4 py-2 bg-gray-800 rounded-lg border border-gray-700 focus:border-blue-500 focus:outline-none"
+                >
+                <button 
+                    onclick="analyzeTx()"
+                    class="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition"
+                >
+                    Analyze
+                </button>
+            </div>
+            <div id="analyze-result" class="mt-4"></div>
+        </div>
+
+        <!-- Live Feed -->
+        <div class="glass rounded-lg p-6">
+            <h3 class="text-xl font-semibold mb-4">Live Transaction Feed</h3>
+            <div id="tx-feed" class="space-y-2 max-h-96 overflow-y-auto">
+                <div class="text-gray-500 text-center py-8">Waiting for transactions...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let stats = { brc20: 0, runes: 0, stamps: 0 };
+        let chart = null;
+        let recentActivity = { brc20: 0, runes: 0, stamps: 0 }; // Track recent activity per interval
+        let chartData = {
+            labels: [],
+            datasets: [
+                {
+                    label: 'BRC-20',
+                    data: [],
+                    borderColor: '#FF6B6B',
+                    backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                    tension: 0.4
+                },
+                {
+                    label: 'Runes',
+                    data: [],
+                    borderColor: '#4ECDC4',
+                    backgroundColor: 'rgba(78, 205, 196, 0.1)',
+                    tension: 0.4
+                },
+                {
+                    label: 'Stamps',
+                    data: [],
+                    borderColor: '#A8E6CF',
+                    backgroundColor: 'rgba(168, 230, 207, 0.1)',
+                    tension: 0.4
+                }
+            ]
+        };
+
+        function initChart() {
+            const ctx = document.getElementById('activity-chart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: chartData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: { color: '#fff' }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            ticks: { color: '#fff' }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            ticks: { color: '#fff' },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        function connectWebSocket() {
+            ws = new WebSocket(`ws://${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                document.getElementById('connection-status').textContent = 'Connected';
+                document.getElementById('connection-status').classList.add('text-green-400');
+            };
+            
+            ws.onmessage = (event) => {
+                const tx = JSON.parse(event.data);
+                handleNewTransaction(tx);
+            };
+            
+            ws.onclose = () => {
+                document.getElementById('connection-status').textContent = 'Disconnected';
+                document.getElementById('connection-status').classList.remove('text-green-400');
+                setTimeout(connectWebSocket, 3000);
+            };
+        }
+
+        function handleNewTransaction(tx) {
+            // Update stats
+            tx.protocols.forEach(protocol => {
+                if (stats[protocol] !== undefined) {
+                    stats[protocol]++;
+                    document.getElementById(`${protocol}-count`).textContent = stats[protocol];
+                    
+                    // Track recent activity
+                    recentActivity[protocol]++;
+                }
+            });
+            
+            // Add to feed
+            const feed = document.getElementById('tx-feed');
+            const txElement = createTransactionElement(tx);
+            
+            if (feed.children[0].classList.contains('text-gray-500')) {
+                feed.innerHTML = '';
+            }
+            
+            feed.insertBefore(txElement, feed.firstChild);
+            
+            // Keep only last 20 transactions
+            while (feed.children.length > 20) {
+                feed.removeChild(feed.lastChild);
+            }
+        }
+
+        function createTransactionElement(tx) {
+            const div = document.createElement('div');
+            div.className = 'p-3 bg-gray-800 rounded-lg slide-in hover:bg-gray-700 transition cursor-pointer';
+            div.onclick = () => navigator.clipboard.writeText(tx.txid);
+            
+            const protocols = tx.protocols.map(p => 
+                `<span class="px-2 py-1 rounded text-xs font-semibold protocol-${p} text-white">${p.toUpperCase()}</span>`
+            ).join(' ');
+            
+            const importance = '⚡'.repeat(Math.min(tx.activities[0]?.importance || 1, 3));
+            
+            div.innerHTML = `
+                <div class="flex justify-between items-start">
+                    <div class="flex-1">
+                        <div class="font-mono text-sm text-blue-400 mb-1">${tx.txid.substring(0, 16)}...</div>
+                        <div class="flex gap-2 mb-1">${protocols}</div>
+                        <div class="text-xs text-gray-400">${tx.activities[0]?.description || 'Activity detected'}</div>
+                    </div>
+                    <div class="text-right ml-4">
+                        <div class="text-sm">${importance}</div>
+                        <div class="text-xs text-gray-500">${(tx.fee_rate).toFixed(1)} sat/vB</div>
+                    </div>
+                </div>
+            `;
+            
+            return div;
+        }
+
+        function updateChart(protocols) {
+            const now = new Date().toLocaleTimeString();
+            
+            if (chartData.labels.length > 20) {
+                chartData.labels.shift();
+                chartData.datasets.forEach(d => d.data.shift());
+            }
+            
+            chartData.labels.push(now);
+            
+            const counts = { brc20: 0, runes: 0, stamps: 0 };
+            protocols.forEach(p => counts[p] = (counts[p] || 0) + 1);
+            
+            chartData.datasets[0].data.push(counts.brc20);
+            chartData.datasets[1].data.push(counts.runes);
+            chartData.datasets[2].data.push(counts.stamps);
+            
+            chart.update();
+        }
+
+        // Update chart every 5 seconds with recent activity
+        setInterval(() => {
+            const now = new Date().toLocaleTimeString();
+            
+            // Only update if we have space or need to shift
+            if (chartData.labels.length >= 20) {
+                chartData.labels.shift();
+                chartData.datasets.forEach(d => d.data.shift());
+            }
+            
+            chartData.labels.push(now);
+            
+            // Add the recent activity counts
+            chartData.datasets[0].data.push(recentActivity.brc20);
+            chartData.datasets[1].data.push(recentActivity.runes);
+            chartData.datasets[2].data.push(recentActivity.stamps);
+            
+            // Reset recent activity for next interval
+            recentActivity = { brc20: 0, runes: 0, stamps: 0 };
+            
+            chart.update();
+        }, 5000);
+
+        async function analyzeTx() {
+            const txid = document.getElementById('txid-input').value.trim();
+            if (!txid) return;
+            
+            const resultDiv = document.getElementById('analyze-result');
+            resultDiv.innerHTML = '<div class="text-gray-400">Analyzing...</div>';
+            
+            try {
+                const response = await fetch(`/api/analyze/${txid}`, { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.error) {
+                    resultDiv.innerHTML = `<div class="text-red-400">Error: ${data.error}</div>`;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="mt-4 p-4 bg-gray-800 rounded-lg">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <div class="text-sm text-gray-400">Protocols</div>
+                                    <div class="font-semibold">${data.protocols_detected.join(', ') || 'None'}</div>
+                                </div>
+                                <div>
+                                    <div class="text-sm text-gray-400">Activities</div>
+                                    <div class="font-semibold">${data.activity_count}</div>
+                                </div>
+                                <div>
+                                    <div class="text-sm text-gray-400">Value</div>
+                                    <div class="font-semibold">${data.total_value_btc.toFixed(8)} BTC</div>
+                                </div>
+                                <div>
+                                    <div class="text-sm text-gray-400">Fee Rate</div>
+                                    <div class="font-semibold">${data.fee_rate_sat_vb.toFixed(1)} sat/vB</div>
+                                </div>
+                            </div>
+                            ${data.activities.length > 0 ? `
+                                <div class="mt-4">
+                                    <div class="text-sm text-gray-400 mb-2">Detected Activities:</div>
+                                    ${data.activities.map(a => `
+                                        <div class="p-2 bg-gray-700 rounded mb-1">
+                                            <span class="font-semibold">${a.protocol.toUpperCase()}</span>: ${a.description}
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="text-red-400">Error: ${error.message}</div>`;
+            }
+        }
+
+        // Initialize
+        initChart();
+        connectWebSocket();
+        
+        // Load initial stats
+        fetch('/api/stats')
+            .then(r => r.json())
+            .then(data => {
+                Object.entries(data).forEach(([protocol, stat]) => {
+                    if (stats[protocol] !== undefined) {
+                        stats[protocol] = stat.total_txs;
+                        document.getElementById(`${protocol}-count`).textContent = stat.total_txs;
+                    }
+                });
+            });
+    </script>
+</body>
+</html>

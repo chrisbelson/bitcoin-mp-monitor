@@ -1,120 +1,53 @@
-use bitcoin_debugger::*;
+use bitcoin_monitor::*;
 use clap::{Arg, Command};
-use serde_json;
-use std::convert::Infallible;
+use std::sync::Arc;
 use warp::Filter;
+use warp::ws::{Message, WebSocket};
+use futures_util::{StreamExt, SinkExt};
+use tokio::sync::broadcast;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let matches = Command::new("bitcoin-debugger")
-        .version("1.0")
-        .about("Bitcoin Metaprotocol Transaction Debugger")
-        .arg(Arg::new("mode")
-            .short('m')
-            .long("mode")
-            .value_name("MODE")
-            .help("Run mode: cli or server")
-            .default_value("server"))
-        .arg(Arg::new("txid")
-            .short('t')
-            .long("txid")
-            .value_name("TXID")
-            .help("Transaction ID to debug (CLI mode)"))
+    let matches = Command::new("bitcoin-monitor")
+        .version("2.0")
+        .about("Real-Time Bitcoin Metaprotocol Monitor - Track BRC-20, Runes, Stamps & More")
         .arg(Arg::new("port")
             .short('p')
             .long("port")
             .value_name("PORT")
             .help("Server port")
             .default_value("8000"))
+        .arg(Arg::new("demo")
+            .short('d')
+            .long("demo")
+            .help("Enable demo mode with simulated transactions")
+            .action(clap::ArgAction::SetTrue))
         .get_matches();
 
-    let mode = matches.get_one::<String>("mode").unwrap();
+    let port: u16 = matches.get_one::<String>("port").unwrap().parse()?;
+    let demo_mode = matches.get_flag("demo");
     
-    match mode.as_str() {
-        "cli" => {
-            if let Some(txid) = matches.get_one::<String>("txid") {
-                run_cli(txid).await?;
-            } else {
-                println!("Error: --txid required in CLI mode");
-                std::process::exit(1);
-            }
-        }
-        "server" => {
-            let port: u16 = matches.get_one::<String>("port").unwrap().parse()?;
-            run_server(port).await?;
-        }
-        _ => {
-            println!("Error: Invalid mode. Use 'cli' or 'server'");
-            std::process::exit(1);
-        }
+    println!("Bitcoin Metaprotocol Monitor v2.0");
+    if demo_mode {
+        println!("Starting in DEMO MODE - simulated transactions enabled");
     }
+    println!("Starting real-time monitoring...");
     
-    Ok(())
-}
-
-async fn run_cli(txid: &str) -> anyhow::Result<()> {
-    println!("🔍 Debugging transaction: {}", txid);
+    // Initialize monitor
+    let (monitor, tx_receiver) = MetaprotocolMonitor::new();
+    let monitor = Arc::new(monitor);
     
-    match debug_transaction(txid).await {
-        Ok(result) => {
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        }
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            std::process::exit(1);
-        }
-    }
+    // Start monitoring
+    monitor.clone().start_monitoring(demo_mode).await;
     
-    Ok(())
-}
-
-async fn run_server(port: u16) -> anyhow::Result<()> {
-    println!("🚀 Starting Bitcoin Metaprotocol Debugger on port {}", port);
+    // Setup routes
+    let routes = setup_routes(monitor.clone(), tx_receiver);
     
-    // CORS headers
-    let cors = warp::cors()
-        .allow_any_origin()
-        .allow_headers(vec!["content-type"])
-        .allow_methods(vec!["GET", "POST", "OPTIONS"]);
-    
-    // Debug endpoint
-    let debug = warp::path!("api" / "debug" / String)
-        .and(warp::post())
-        .and_then(handle_debug);
-    
-    // Raw transaction endpoint
-    let raw_tx = warp::path!("api" / "tx" / String)
-        .and(warp::get())
-        .and_then(handle_raw_tx);
-    
-    // Test endpoint
-    let test = warp::path!("api" / "test")
-        .and(warp::get())
-        .and_then(handle_test);
-    
-    // Root endpoint
-    let root = warp::path::end()
-        .and(warp::get())
-        .map(move || {
-            warp::reply::json(&serde_json::json!({
-                "message": "Bitcoin Metaprotocol Debugger",
-                "endpoints": {
-                    "debug": "POST /api/debug/:txid",
-                    "raw": "GET /api/tx/:txid", 
-                    "test": "GET /api/test"
-                },
-                "example": format!("curl -X POST http://localhost:{}/api/debug/b61b0172d95e266c18aea0c624db987e971a5d6d4ebc2aaed85da4642d635735", port)
-            }))
-        });
-    
-    let routes = debug
-        .or(raw_tx)
-        .or(test)
-        .or(root)
-        .with(cors);
-    
-    println!("Ready! Try:");
-    println!("  curl -X POST http://localhost:{}/api/debug/b61b0172d95e266c18aea0c624db987e971a5d6d4ebc2aaed85da4642d635735", port);
+    println!("\nServer ready on http://localhost:{}", port);
+    println!("Dashboard: http://localhost:{}/", port);
+    println!("WebSocket: ws://localhost:{}/ws", port);
+    println!("API: http://localhost:{}/api/analyze/{{txid}}", port);
+    println!("\nMonitoring protocols: BRC-20, Runes, Stamps");
     
     warp::serve(routes)
         .run(([0, 0, 0, 0], port))
@@ -123,71 +56,110 @@ async fn run_server(port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn handle_debug(txid: String) -> Result<impl warp::Reply, Infallible> {
-    // Validate txid format
-    if txid.len() != 64 || !txid.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&serde_json::json!({"error": "Invalid transaction ID"})),
-            warp::http::StatusCode::BAD_REQUEST,
-        ));
-    }
+fn setup_routes(
+    monitor: Arc<MetaprotocolMonitor>,
+    tx_receiver: broadcast::Receiver<LiveTransaction>,
+) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    let cors = warp::cors()
+        .allow_any_origin()
+        .allow_headers(vec!["content-type"])
+        .allow_methods(vec!["GET", "POST", "OPTIONS"]);
     
-    match debug_transaction(&txid).await {
-        Ok(result) => Ok(warp::reply::with_status(
-            warp::reply::json(&result),
-            warp::http::StatusCode::OK,
-        )),
-        Err(e) => Ok(warp::reply::with_status(
-            warp::reply::json(&serde_json::json!({"error": e.to_string()})),
-            warp::http::StatusCode::NOT_FOUND,
-        )),
-    }
+    // Dashboard HTML
+    let dashboard = warp::path::end()
+        .and(warp::get())
+        .map(|| {
+            let html = include_str!("../static/dashboard.html");
+            warp::reply::html(html)
+        });
+    
+    // WebSocket endpoint
+    let tx_receiver = Arc::new(tokio::sync::Mutex::new(tx_receiver));
+    let ws = warp::path("ws")
+        .and(warp::ws())
+        .and(with_monitor(tx_receiver))
+        .map(|ws: warp::ws::Ws, tx_rx| {
+            ws.on_upgrade(move |socket| websocket_handler(socket, tx_rx))
+        });
+    
+    // API endpoints
+    let api_analyze = warp::path!("api" / "analyze" / String)
+        .and(warp::post())
+        .and_then(handle_analyze);
+    
+    let monitor_stats = monitor.clone();
+    let api_stats = warp::path!("api" / "stats")
+        .and(warp::get())
+        .and(with_monitor_stats(monitor_stats))
+        .and_then(handle_stats);
+    
+    let api_health = warp::path!("api" / "health")
+        .and(warp::get())
+        .map(|| warp::reply::json(&serde_json::json!({
+            "status": "healthy",
+            "version": "2.0",
+            "protocols": ["brc20", "runes", "stamps"]
+        })));
+    
+    dashboard
+        .or(ws)
+        .or(api_analyze)
+        .or(api_stats)
+        .or(api_health)
+        .with(cors)
 }
 
-async fn handle_raw_tx(txid: String) -> Result<impl warp::Reply, Infallible> {
-    let client = BitcoinClient::new();
-    
-    match client.get_transaction(&txid).await {
-        Ok(tx) => Ok(warp::reply::with_status(
-            warp::reply::json(&tx),
-            warp::http::StatusCode::OK,
-        )),
-        Err(e) => Ok(warp::reply::with_status(
-            warp::reply::json(&serde_json::json!({"error": e.to_string()})),
-            warp::http::StatusCode::NOT_FOUND,
-        )),
-    }
+fn with_monitor(
+    tx_rx: Arc<tokio::sync::Mutex<broadcast::Receiver<LiveTransaction>>>
+) -> impl Filter<Extract = (Arc<tokio::sync::Mutex<broadcast::Receiver<LiveTransaction>>>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || tx_rx.clone())
 }
 
-async fn handle_test() -> Result<impl warp::Reply, Infallible> {
-    let test_txs = vec![
-        "b61b0172d95e266c18aea0c624db987e971a5d6d4ebc2aaed85da4642d635735", // ORDI deploy
-        "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b", // Regular BTC tx
-    ];
+fn with_monitor_stats(
+    monitor: Arc<MetaprotocolMonitor>
+) -> impl Filter<Extract = (Arc<MetaprotocolMonitor>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || monitor.clone())
+}
+
+async fn websocket_handler(
+    ws: WebSocket,
+    tx_rx: Arc<tokio::sync::Mutex<broadcast::Receiver<LiveTransaction>>>,
+) {
+    let (mut ws_tx, mut ws_rx) = ws.split();
     
-    let mut results = Vec::new();
+    // Clone receiver for this connection
+    let mut rx = {
+        let mut locked = tx_rx.lock().await;
+        locked.resubscribe()
+    };
     
-    for txid in test_txs {
-        match debug_transaction(txid).await {
-            Ok(result) => {
-                results.push(serde_json::json!({
-                    "txid": txid,
-                    "activities": result.activities.len(),
-                    "protocols": result.protocols_detected,
-                    "operations": result.summary.operations
-                }));
-            }
-            Err(e) => {
-                results.push(serde_json::json!({
-                    "txid": txid,
-                    "error": e.to_string()
-                }));
+    // Send transactions to websocket
+    let send_task = tokio::spawn(async move {
+        while let Ok(tx) = rx.recv().await {
+            let msg = serde_json::to_string(&tx).unwrap();
+            if ws_tx.send(Message::text(msg)).await.is_err() {
+                break;
             }
         }
+    });
+    
+    // Handle incoming messages (if any)
+    while let Some(Ok(_msg)) = ws_rx.next().await {
     }
     
-    Ok(warp::reply::with_status(
-        warp::reply::json(&serde_json::json!({"test_results": results})),
-        warp::http::StatusCode::OK,
-    ))
+    send_task.abort();
+}
+
+async fn handle_analyze(txid: String) -> Result<impl warp::Reply, warp::Rejection> {
+    match analyze_transaction(&txid).await {
+        Ok(result) => Ok(warp::reply::json(&result)),
+        Err(e) => Ok(warp::reply::json(&serde_json::json!({
+            "error": e.to_string()
+        }))),
+    }
+}
+
+async fn handle_stats(monitor: Arc<MetaprotocolMonitor>) -> Result<impl warp::Reply, warp::Rejection> {
+    let stats = monitor.get_stats().await;
+    Ok(warp::reply::json(&stats))
 }
