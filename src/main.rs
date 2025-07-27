@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 async fn main() -> anyhow::Result<()> {
     let matches = Command::new("bitcoin-monitor")
         .version("2.0")
-        .about("Real-Time Bitcoin Metaprotocol Monitor - Track BRC-20, Runes, Stamps & More")
+        .about("Real-Time Bitcoin Metaprotocol Monitor - Track BRC-20, Runes, and STAMPS")
         .arg(Arg::new("port")
             .short('p')
             .long("port")
