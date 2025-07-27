@@ -83,7 +83,9 @@ impl BitcoinClient {
             anyhow::bail!("Transaction not found");
         }
         
-        let tx: Transaction = resp.json().await?;
+        let tx: serde_json::Value = resp.json().await?;
+        println!("TX data: {}", serde_json::to_string_pretty(&tx)?);
+
         Ok(tx)
     }
 }
