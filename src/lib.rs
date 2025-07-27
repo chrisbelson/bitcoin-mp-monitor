@@ -82,6 +82,9 @@ pub struct LiveTransaction {
 pub struct BitcoinClient {
     client: reqwest::Client,
     base_url: String,
+    use_rpc: bool,
+    rpc_user: String,
+    rpc_pass: String,
 }
 
 impl BitcoinClient {
@@ -89,6 +92,19 @@ impl BitcoinClient {
         Self {
             client: reqwest::Client::new(),
             base_url: "https://blockstream.info/api".to_string(),
+            use_rpc: false,
+            rpc_user: String::new(),
+            rpc_pass: String::new(),
+        }
+    }
+    
+    pub fn new_rpc(user: &str, pass: &str) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            base_url: "http://127.0.0.1:8332".to_string(),
+            use_rpc: true,
+            rpc_user: user.to_string(),
+            rpc_pass: pass.to_string(),
         }
     }
 

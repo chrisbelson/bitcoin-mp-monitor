@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  bitcoind:
+    image: ruimarinho/bitcoin-core:25.0
+    restart: unless-stopped
+    volumes:
+      - bitcoind_data:/bitcoin
+    environment:
+      BITCOIN_NETWORK: mainnet
+      BITCOIN_RPCUSER: btcuser
+      BITCOIN_RPCPASSWORD: btcpass
+    command:
+      [
+        "-printtoconsole",
+        "-server",
+        "-prune=550",
+        "-rpcallowip=0.0.0.0/0",
+        "-rpcbind=0.0.0.0",
+        "-rpcport=8332",
+        "-txindex=0",
+        "-datadir=/bitcoin"
+      ]
+    ports:
+      - "8332:8332"   # RPC
+      - "28332:28332" # (Optional) ZMQ tx
+      - "28333:28333" # (Optional) ZMQ block
+
+volumes:
+  bitcoind_data:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+
