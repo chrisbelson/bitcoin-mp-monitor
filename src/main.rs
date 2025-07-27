@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     
     println!("Bitcoin Metaprotocol Monitor v2.0");
     if demo_mode {
-        println!("Starting in DEMO MODE - simulated transactions enabled");
+        println!("Starting in demo mode");
     }
     println!("Starting real-time monitoring...");
     
