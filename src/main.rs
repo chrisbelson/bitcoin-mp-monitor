@@ -60,7 +60,7 @@ async fn run_cli(txid: &str) -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Err(e) => {
-            eprintln!("❌ Error: {}", e);
+            eprintln!("Error: {}", e);
             std::process::exit(1);
         }
     }
@@ -113,7 +113,7 @@ async fn run_server(port: u16) -> anyhow::Result<()> {
         .or(root)
         .with(cors);
     
-    println!("📡 Ready! Try:");
+    println!("Ready! Try:");
     println!("  curl -X POST http://localhost:{}/api/debug/b61b0172d95e266c18aea0c624db987e971a5d6d4ebc2aaed85da4642d635735", port);
     
     warp::serve(routes)
