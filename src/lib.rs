@@ -8,6 +8,14 @@ pub struct Transaction {
     pub fee: Option<u64>,
     pub status: TxStatus,
     pub vout: Vec<Output>,
+    pub vin: Vec<Input>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Input {
+    pub txid: String,
+    pub vout: u32,
+    pub witness: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,9 +91,7 @@ impl BitcoinClient {
             anyhow::bail!("Transaction not found");
         }
         
-        let tx: serde_json::Value = resp.json().await?;
-        println!("TX data: {}", serde_json::to_string_pretty(&tx)?);
-
+        let tx: Transaction = resp.json().await?;
         Ok(tx)
     }
 }
@@ -93,9 +99,19 @@ impl BitcoinClient {
 pub fn parse_brc20(tx: &Transaction) -> Vec<Activity> {
     let mut activities = Vec::new();
     
+    // Check outputs for OP_RETURN (old method)
     for (idx, out) in tx.vout.iter().enumerate() {
         if let Some(activity) = extract_brc20_from_output(out, idx) {
             activities.push(activity);
+        }
+    }
+    
+    // Check inputs for witness data (Ordinals inscriptions)
+    for (idx, input) in tx.vin.iter().enumerate() {
+        if let Some(witness) = &input.witness {
+            if let Some(activity) = extract_brc20_from_witness(witness, idx) {
+                activities.push(activity);
+            }
         }
     }
     
@@ -130,6 +146,52 @@ fn extract_brc20_from_output(out: &Output, idx: usize) -> Option<Activity> {
     // Parse the JSON
     let brc20_data: serde_json::Value = serde_json::from_str(json_match.as_str()).ok()?;
     
+    parse_brc20_json(&brc20_data, idx, script)
+}
+
+fn extract_brc20_from_witness(witness: &[String], idx: usize) -> Option<Activity> {
+    // Look through witness stack for inscription envelope
+    for witness_item in witness {
+        if let Some(activity) = parse_inscription_envelope(witness_item, idx) {
+            return Some(activity);
+        }
+    }
+    None
+}
+
+fn parse_inscription_envelope(witness_hex: &str, idx: usize) -> Option<Activity> {
+    // Ordinals inscription envelope pattern:
+    // OP_FALSE OP_IF "ord" OP_1 content_type OP_0 content OP_ENDIF
+    
+    // Convert hex to bytes
+    let bytes = hex::decode(witness_hex).ok()?;
+    let hex_str = hex::encode(&bytes);
+    
+    // Look for "ord" marker (6f7264) in the witness script
+    if !hex_str.contains("6f7264") {
+        return None;
+    }
+    
+    // Extract content after the inscription envelope
+    // This is a simplified parser - real implementation would need proper script parsing
+    let content_start = hex_str.find("6f7264")?;
+    let content_hex = &hex_str[content_start + 20..]; // Skip some bytes after "ord"
+    
+    // Convert to string and look for BRC-20 JSON
+    let content_bytes = hex::decode(content_hex).ok()?;
+    let content_text = String::from_utf8_lossy(&content_bytes).replace('\0', "");
+    
+    // Look for BRC-20 JSON pattern
+    let json_pattern = regex::Regex::new(r#"\{[^}]*"p"\s*:\s*"brc-20"[^}]*\}"#).ok()?;
+    let json_match = json_pattern.find(&content_text)?;
+    
+    // Parse the JSON
+    let brc20_data: serde_json::Value = serde_json::from_str(json_match.as_str()).ok()?;
+    
+    parse_brc20_json(&brc20_data, idx, witness_hex)
+}
+
+fn parse_brc20_json(brc20_data: &serde_json::Value, idx: usize, raw_script: &str) -> Option<Activity> {
     let op = brc20_data.get("op")?.as_str()?.to_lowercase();
     if !["deploy", "mint", "transfer"].contains(&op.as_str()) {
         return None;
@@ -230,7 +292,7 @@ fn extract_brc20_from_output(out: &Output, idx: usize) -> Option<Activity> {
         data,
         changes,
         description,
-        raw_script: script.clone(),
+        raw_script: raw_script.to_string(),
     })
 }
 
